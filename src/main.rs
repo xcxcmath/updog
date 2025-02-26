@@ -1,10 +1,13 @@
 use clap::Parser;
+use std::collections::HashMap;
 use std::process;
 use tracing::{error, info};
-use updog::{cli::{Cli, Commands}, Config, PackageManager};
-use std::collections::HashMap;
+use updog::{
+    cli::{Cli, Commands},
+    Config, PackageManager,
+};
 
-// 실행 결과를 추적하기 위한 구조체
+// Execution result tracking struct
 struct ExecutionResult {
     success: bool,
     message: String,
@@ -15,9 +18,7 @@ fn main() {
 
     // Initialize logging
     let level = if cli.verbose { "debug" } else { "info" };
-    tracing_subscriber::fmt()
-        .with_env_filter(level)
-        .init();
+    tracing_subscriber::fmt().with_env_filter(level).init();
 
     // Load configuration
     let config_path = cli.get_config_path();
@@ -39,7 +40,9 @@ fn main() {
     let pm = PackageManager::with_dry_run(config, is_dry_run);
 
     match cli.command {
-        Commands::Check { package_manager, .. } => {
+        Commands::Check {
+            package_manager, ..
+        } => {
             let managers = if let Some(name) = package_manager {
                 vec![name]
             } else {
@@ -48,28 +51,34 @@ fn main() {
 
             let mut has_error = false;
             let mut results = HashMap::new();
-            
+
             for name in managers {
                 info!("Checking updates for {}", name);
                 match pm.check(&name) {
                     Ok(_) => {
-                        results.insert(name.clone(), ExecutionResult {
-                            success: true,
-                            message: "Successfully checked for updates".to_string(),
-                        });
+                        results.insert(
+                            name.clone(),
+                            ExecutionResult {
+                                success: true,
+                                message: "Successfully checked for updates".to_string(),
+                            },
+                        );
                     }
                     Err(e) => {
                         error!("{}: {}", name, e);
-                        results.insert(name.clone(), ExecutionResult {
-                            success: false,
-                            message: format!("Error: {}", e),
-                        });
+                        results.insert(
+                            name.clone(),
+                            ExecutionResult {
+                                success: false,
+                                message: format!("Error: {}", e),
+                            },
+                        );
                         has_error = true;
                     }
                 }
             }
-            
-            // 실행 결과 요약 출력
+
+            // Print summary of execution result
             print_summary("Check", &results);
 
             if has_error {
@@ -77,7 +86,9 @@ fn main() {
             }
         }
 
-        Commands::Update { package_manager, .. } => {
+        Commands::Update {
+            package_manager, ..
+        } => {
             let managers = if let Some(name) = package_manager {
                 vec![name]
             } else {
@@ -86,28 +97,34 @@ fn main() {
 
             let mut has_error = false;
             let mut results = HashMap::new();
-            
+
             for name in managers {
                 info!("Updating {}", name);
                 match pm.update(&name) {
                     Ok(_) => {
-                        results.insert(name.clone(), ExecutionResult {
-                            success: true,
-                            message: "Successfully updated".to_string(),
-                        });
+                        results.insert(
+                            name.clone(),
+                            ExecutionResult {
+                                success: true,
+                                message: "Successfully updated".to_string(),
+                            },
+                        );
                     }
                     Err(e) => {
                         error!("{}: {}", name, e);
-                        results.insert(name.clone(), ExecutionResult {
-                            success: false,
-                            message: format!("Error: {}", e),
-                        });
+                        results.insert(
+                            name.clone(),
+                            ExecutionResult {
+                                success: false,
+                                message: format!("Error: {}", e),
+                            },
+                        );
                         has_error = true;
                     }
                 }
             }
-            
-            // 실행 결과 요약 출력
+
+            // Print summary of execution result
             print_summary("Update", &results);
 
             if has_error {
@@ -121,15 +138,15 @@ fn main() {
     }
 }
 
-// 실행 결과 요약을 출력하는 함수
+// Print summary of execution result
 fn print_summary(operation: &str, results: &HashMap<String, ExecutionResult>) {
     println!("\n{} Summary:", operation);
     println!("==============================================");
-    
+
     let mut success_count = 0;
     let mut failure_count = 0;
-    
-    // 성공한 항목 계산
+
+    // Calculate successful items
     for (_, result) in results.iter() {
         if result.success {
             success_count += 1;
@@ -137,8 +154,8 @@ fn print_summary(operation: &str, results: &HashMap<String, ExecutionResult>) {
             failure_count += 1;
         }
     }
-    
-    // 성공한 항목이 있는 경우에만 출력
+
+    // Print successful items if there are any
     if success_count > 0 {
         println!("✅ Successful:");
         for (name, result) in results.iter() {
@@ -147,11 +164,11 @@ fn print_summary(operation: &str, results: &HashMap<String, ExecutionResult>) {
             }
         }
     }
-    
-    // 실패한 항목이 있는 경우에만 출력
+
+    // Print failed items if there are any
     if failure_count > 0 {
         if success_count > 0 {
-            println!(); // 성공 항목과 실패 항목 사이에 빈 줄 추가
+            println!(); // Add empty line between success and failure items
         }
         println!("❌ Failed:");
         for (name, result) in results.iter() {
@@ -160,9 +177,13 @@ fn print_summary(operation: &str, results: &HashMap<String, ExecutionResult>) {
             }
         }
     }
-    
-    // 통계 출력
-    println!("\nStats: {} total, {} succeeded, {} failed", 
-             results.len(), success_count, failure_count);
+
+    // Print statistics
+    println!(
+        "\nStats: {} total, {} succeeded, {} failed",
+        results.len(),
+        success_count,
+        failure_count
+    );
     println!("==============================================");
 }

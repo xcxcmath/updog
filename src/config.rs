@@ -23,40 +23,43 @@ impl<'de> Deserialize<'de> for UpdateCommand {
     where
         D: Deserializer<'de>,
     {
-        // 먼저 값을 serde_yaml::Value로 파싱
+        // First, parse the value as serde_yaml::Value
         let value = serde_yaml::Value::deserialize(deserializer)?;
-        
+
         match value {
-            // 문자열인 경우 update 명령으로 취급
+            // String values are treated as update commands
             serde_yaml::Value::String(s) => Ok(UpdateCommand {
                 check: None,
                 update: Some(s),
             }),
-            
-            // 맵(객체)인 경우 일반적인 방식으로 파싱
+
+            // Mappings (objects) are parsed in the usual way
             serde_yaml::Value::Mapping(map) => {
                 let mut check = None;
                 let mut update = None;
-                
-                // check 키가 있는지 확인
+
+                // Check if the "check" key exists
                 if let Some(check_val) = map.get(&serde_yaml::Value::String("check".to_string())) {
                     if let serde_yaml::Value::String(s) = check_val {
                         check = Some(s.clone());
                     }
                 }
-                
-                // update 키가 있는지 확인
-                if let Some(update_val) = map.get(&serde_yaml::Value::String("update".to_string())) {
+
+                // Check if the "update" key exists
+                if let Some(update_val) = map.get(&serde_yaml::Value::String("update".to_string()))
+                {
                     if let serde_yaml::Value::String(s) = update_val {
                         update = Some(s.clone());
                     }
                 }
-                
+
                 Ok(UpdateCommand { check, update })
-            },
-            
-            // 다른 타입은 오류 반환
-            _ => Err(serde::de::Error::custom("Expected string or mapping for UpdateCommand")),
+            }
+
+            // Other types are errors
+            _ => Err(serde::de::Error::custom(
+                "Expected string or mapping for UpdateCommand",
+            )),
         }
     }
 }
@@ -115,7 +118,7 @@ mod tests {
         assert!(config.commands.contains_key("homebrew"));
         assert!(config.commands.contains_key("apt"));
     }
-    
+
     #[test]
     fn test_parse_string_as_update_command() {
         let yaml = r#"
@@ -127,7 +130,7 @@ mod tests {
         "#;
         let config: Config = serde_yaml::from_str(yaml).unwrap();
         assert_eq!(config.commands.len(), 2);
-        
+
         let npm = config.commands.get("npm").unwrap();
         assert_eq!(npm.check, None);
         assert_eq!(npm.update, Some("npm update -g".to_string()));

@@ -58,7 +58,7 @@ impl Cli {
         if let Some(config_path) = &self.config {
             config_path.clone()
         } else {
-            // 홈 디렉토리 기반 설정 파일 경로
+            // Home directory based configuration file path
             if let Some(home_dir) = dirs::home_dir() {
                 let config_path = home_dir.join(".config").join("updog").join("updog.yaml");
                 if config_path.exists() {
@@ -66,7 +66,7 @@ impl Cli {
                 }
             }
 
-            // XDG_CONFIG_HOME 기반 설정 파일 경로
+            // XDG_CONFIG_HOME based configuration file path
             if let Some(config_dir) = dirs::config_dir() {
                 let config_path = config_dir.join("updog").join("updog.yaml");
                 if config_path.exists() {
@@ -74,7 +74,7 @@ impl Cli {
                 }
             }
 
-            // 기본 설정 파일 경로 (홈 디렉토리 기준)
+            // Default configuration file path (based on home directory)
             dirs::home_dir()
                 .unwrap_or_else(|| PathBuf::from("."))
                 .join(".config")
