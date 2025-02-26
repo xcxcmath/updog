@@ -1,0 +1,19 @@
+[package]
+name = "updog"
+version = "0.1.0"
+edition = "2021"
+authors = ["bjk"]
+description = "Cross-platform CLI/TUI tool for managing system and package updates"
+
+[dependencies]
+thiserror = "2.0.11"
+serde = { version = "1.0", features = ["derive"] }
+serde_yaml = "0.9"
+regex = "1.11"
+clap = { version = "4.5", features = ["derive"] }
+dirs = "5.0"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[dev-dependencies]
+tempfile = "3.8"
