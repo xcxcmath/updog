@@ -1,5 +1,7 @@
 # 🌭 Updog
 
+Just for Rust practice.
+
 Cross-platform CLI/TUI tool for managing system and package updates seamlessly.
 *Update everything. Everywhere. Efficiently.*
 
@@ -15,15 +17,7 @@ Cross-platform CLI/TUI tool for managing system and package updates seamlessly.
 
 ## 📦 Installation
 
-Linux/macOS:
-```bash
-curl -fsSL https://raw.githubusercontent.com/xcxcmath/updog/main/install.sh | bash
-```
-
-Windows:
-```powershell
-irm https://raw.githubusercontent.com/xcxcmath/updog/main/install.ps1 | iex
-```
+**Not implemented yet**
 
 ## ⚙️ Configuration
 
