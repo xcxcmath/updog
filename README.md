@@ -10,7 +10,6 @@ Cross-platform CLI/TUI tool for managing system and package updates seamlessly.
 - Cross-platform support – Works on macOS, Linux, and Windows
 - Configurable updates – Define custom update commands via YAML configuration
 - Interactive & TUI support – Run in a terminal with interactive options
-- Parallel execution – Runs updates efficiently using parallel processing
 - Logging & Dry-run – Logs everything, with an option to preview changes
 - Interactive prompts – Directly respond to package manager prompts during updates
 - Flexible configuration – Supports optional check commands and simplified string syntax
