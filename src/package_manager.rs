@@ -1,8 +1,11 @@
 use crate::config::Config;
+use std::collections::HashSet;
 use std::error::Error;
 use std::fmt;
 use std::process::{Command, ExitStatus, Stdio};
-use tracing::{info, warn};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
+use tracing::{error, info, warn};
 
 #[derive(Debug)]
 pub struct UpdateError {
@@ -20,10 +23,78 @@ impl Error for UpdateError {}
 pub struct PackageManager {
     pub config: Config,
     pub dry_run: bool,
+    process_tracker: Arc<Mutex<ProcessTracker>>,
+}
+
+// Structure to track running processes
+struct ProcessTracker {
+    active_processes: HashSet<u32>, // Set of active process IDs
+    shutdown_requested: Arc<AtomicBool>,
+}
+
+impl ProcessTracker {
+    fn new() -> Self {
+        Self {
+            active_processes: HashSet::new(),
+            shutdown_requested: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
+    // Register a process
+    fn register_process(&mut self, pid: u32) {
+        self.active_processes.insert(pid);
+    }
+
+    // Unregister a process
+    fn unregister_process(&mut self, pid: u32) {
+        self.active_processes.remove(&pid);
+    }
+
+    // Mark shutdown as requested
+    fn request_shutdown(&self) {
+        self.shutdown_requested.store(true, Ordering::SeqCst);
+    }
+
+    // Check if shutdown has been requested
+    fn is_shutdown_requested(&self) -> bool {
+        self.shutdown_requested.load(Ordering::SeqCst)
+    }
+
+    // Terminate all active processes
+    fn terminate_all_processes(&self) {
+        for &pid in &self.active_processes {
+            // Attempt to send SIGTERM signal
+            #[cfg(unix)]
+            unsafe {
+                libc::kill(pid as i32, libc::SIGTERM);
+                info!("Sent SIGTERM to process {}", pid);
+            }
+
+            #[cfg(windows)]
+            {
+                // On Windows, a different termination mechanism is needed
+                // Here, we just perform simple logging
+                warn!(
+                    "Process termination on Windows not implemented for PID: {}",
+                    pid
+                );
+            }
+        }
+    }
 }
 
 impl PackageManager {
     fn run_command(&self, command: &str) -> Result<ExitStatus, UpdateError> {
+        // Abort command execution if shutdown is requested
+        {
+            let tracker = self.process_tracker.lock().unwrap();
+            if tracker.is_shutdown_requested() {
+                return Err(UpdateError {
+                    message: "Command execution aborted due to shutdown request".to_string(),
+                });
+            }
+        }
+
         // Dry run mode - just log the command without executing it
         if self.dry_run {
             info!("[DRY RUN] Would execute: {}", command);
@@ -34,16 +105,38 @@ impl PackageManager {
             });
         }
 
-        let status = Command::new("sh")
+        // Use spawn() to execute the command - wait() for it later
+        let mut child = Command::new("sh")
             .arg("-c")
             .arg(command)
             .stdin(Stdio::inherit())
             .stdout(Stdio::inherit())
             .stderr(Stdio::inherit())
-            .status()
+            .spawn()
             .map_err(|e| UpdateError {
                 message: format!("Failed to execute command: {}", e),
             })?;
+
+        let pid = child.id();
+
+        // Register process ID
+        {
+            let mut tracker = self.process_tracker.lock().unwrap();
+            tracker.register_process(pid);
+            info!("Started process {} for command: {}", pid, command);
+        }
+
+        // Wait for process completion
+        let status = child.wait().map_err(|e| UpdateError {
+            message: format!("Failed to wait for command completion: {}", e),
+        })?;
+
+        // Unregister process ID
+        {
+            let mut tracker = self.process_tracker.lock().unwrap();
+            tracker.unregister_process(pid);
+            info!("Process {} completed", pid);
+        }
 
         // Print exit code
         if let Some(code) = status.code() {
@@ -60,21 +153,85 @@ impl PackageManager {
     }
 
     pub fn new(config: Config) -> Self {
+        let process_tracker = Arc::new(Mutex::new(ProcessTracker::new()));
+        Self::setup_signal_handlers(Arc::clone(&process_tracker));
+
         Self {
             config,
             dry_run: false,
+            process_tracker,
         }
     }
 
     pub fn with_dry_run(config: Config, dry_run: bool) -> Self {
-        Self { config, dry_run }
+        let process_tracker = Arc::new(Mutex::new(ProcessTracker::new()));
+        Self::setup_signal_handlers(Arc::clone(&process_tracker));
+
+        Self {
+            config,
+            dry_run,
+            process_tracker,
+        }
     }
 
     pub fn with_default_config() -> Self {
+        let process_tracker = Arc::new(Mutex::new(ProcessTracker::new()));
+        Self::setup_signal_handlers(Arc::clone(&process_tracker));
+
         Self {
             config: Config::default(),
             dry_run: false,
+            process_tracker,
         }
+    }
+
+    // Set up signal handlers (Unix platforms only)
+    #[cfg(unix)]
+    fn setup_signal_handlers(process_tracker: Arc<Mutex<ProcessTracker>>) {
+        use std::sync::Once;
+        static INIT: Once = Once::new();
+
+        INIT.call_once(|| {
+            let tracker_clone = Arc::clone(&process_tracker);
+
+            // SIGTERM (termination request) handler
+            if let Err(e) = ctrlc::set_handler(move || {
+                error!("Received termination signal, shutting down...");
+                let tracker = tracker_clone.lock().unwrap();
+                tracker.request_shutdown();
+                tracker.terminate_all_processes();
+                std::process::exit(130); // Exit due to signal
+            }) {
+                error!("Error setting up signal handler: {}", e);
+            }
+        });
+    }
+
+    // Simple implementation on Windows
+    #[cfg(not(unix))]
+    fn setup_signal_handlers(process_tracker: Arc<Mutex<ProcessTracker>>) {
+        use std::sync::Once;
+        static INIT: Once = Once::new();
+
+        INIT.call_once(|| {
+            let tracker_clone = Arc::clone(&process_tracker);
+
+            if let Err(e) = ctrlc::set_handler(move || {
+                error!("Received termination signal, shutting down...");
+                let tracker = tracker_clone.lock().unwrap();
+                tracker.request_shutdown();
+                std::process::exit(130);
+            }) {
+                error!("Error setting up signal handler: {}", e);
+            }
+        });
+    }
+
+    // Clean up on exit
+    pub fn cleanup(&self) {
+        let tracker = self.process_tracker.lock().unwrap();
+        tracker.request_shutdown();
+        tracker.terminate_all_processes();
     }
 
     pub fn check(&self, manager_name: &str) -> Result<(), UpdateError> {
@@ -202,7 +359,6 @@ mod tests {
         let config = create_test_config();
         let pm = PackageManager::new(config);
 
-        // If check command is not defined, it is not an error
         assert!(pm.check("no_check").is_ok());
     }
 
@@ -211,7 +367,6 @@ mod tests {
         let config = create_test_config();
         let pm = PackageManager::new(config);
 
-        // If update command is not defined, it is an error
         assert!(pm.update("no_update").is_err());
     }
 
@@ -220,23 +375,23 @@ mod tests {
         let config = create_test_config();
         let pm = PackageManager::new(config);
 
-        // If the command fails, it is an error
         assert!(pm.check("fail").is_err());
         assert!(pm.update("fail").is_err());
     }
 
     #[test]
     fn test_unknown_package_manager() {
-        let pm = PackageManager::with_default_config();
-        let result = pm.check("unknown");
-        assert!(result.is_err());
+        let config = create_test_config();
+        let pm = PackageManager::new(config);
+
+        assert!(pm.check("unknown").is_err());
     }
 
     #[test]
     fn test_update_error_display() {
         let error = UpdateError {
-            message: "test error".to_string(),
+            message: "Test error".to_string(),
         };
-        assert_eq!(error.to_string(), "Update error: test error");
+        assert_eq!(format!("{}", error), "Update error: Test error");
     }
 }

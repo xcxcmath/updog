@@ -39,12 +39,32 @@ fn main() {
 
     let pm = PackageManager::with_dry_run(config, is_dry_run);
 
-    match cli.command {
+    // Set up cleanup on panic
+    let pm_clone = std::panic::catch_unwind(|| {
+        execute_command(&cli.command, &pm);
+        pm // Return PackageManager instance on normal exit
+    });
+
+    // Perform cleanup before exiting
+    if let Ok(pm) = pm_clone {
+        info!("Cleaning up before exit");
+        pm.cleanup();
+    } else {
+        error!("Program panicked! Attempting cleanup...");
+        // Attempt cleanup on panic (create a new PackageManager instance)
+        let fallback_pm = PackageManager::with_dry_run(Config::default(), true);
+        fallback_pm.cleanup();
+        process::exit(1);
+    }
+}
+
+fn execute_command(command: &Commands, pm: &PackageManager) {
+    match command {
         Commands::Check {
             package_manager, ..
         } => {
             let managers = if let Some(name) = package_manager {
-                vec![name]
+                vec![name.clone()]
             } else {
                 pm.config.commands.keys().cloned().collect()
             };
@@ -90,7 +110,7 @@ fn main() {
             package_manager, ..
         } => {
             let managers = if let Some(name) = package_manager {
-                vec![name]
+                vec![name.clone()]
             } else {
                 pm.config.commands.keys().cloned().collect()
             };
