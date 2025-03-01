@@ -63,21 +63,43 @@ fn execute_command(command: &Commands, pm: &PackageManager) {
         Commands::Check {
             package_manager, ..
         } => {
-            let managers = if let Some(name) = package_manager {
-                vec![name.clone()]
-            } else {
-                pm.config.commands.keys().cloned().collect()
+            // If specific package manager is provided, use it. Otherwise, use all available
+            let execution_items = match package_manager {
+                Some(_) => {
+                    // Parse package manager to get manager name and subcommand
+                    let parsed = command.parse_package_manager().unwrap();
+                    vec![parsed]
+                }
+                None => {
+                    // Use all package managers with their default subcommands
+                    pm.config.commands.iter()
+                        .map(|pm_config| (pm_config.id.clone(), None))
+                        .collect()
+                }
             };
 
             let mut has_error = false;
             let mut results = HashMap::new();
 
-            for name in managers {
-                info!("Checking updates for {}", name);
-                match pm.check(&name) {
+            for (manager_name, subcommand) in execution_items {
+                // Display name for logs and results
+                let display_name = match &subcommand {
+                    Some(sc) => format!("{}:{}", manager_name, sc),
+                    None => manager_name.clone(),
+                };
+                
+                info!("Checking updates for {}", display_name);
+                
+                // Execute check command with the appropriate subcommand
+                let result = match &subcommand {
+                    Some(sc) => pm.check_with_subcommand(&manager_name, Some(sc)),
+                    None => pm.check(&manager_name),
+                };
+                
+                match result {
                     Ok(_) => {
                         results.insert(
-                            name.clone(),
+                            display_name,
                             ExecutionResult {
                                 success: true,
                                 message: "Successfully checked for updates".to_string(),
@@ -85,9 +107,9 @@ fn execute_command(command: &Commands, pm: &PackageManager) {
                         );
                     }
                     Err(e) => {
-                        error!("{}: {}", name, e);
+                        error!("{}: {}", manager_name, e);
                         results.insert(
-                            name.clone(),
+                            display_name,
                             ExecutionResult {
                                 success: false,
                                 message: format!("Error: {}", e),
@@ -109,21 +131,43 @@ fn execute_command(command: &Commands, pm: &PackageManager) {
         Commands::Update {
             package_manager, ..
         } => {
-            let managers = if let Some(name) = package_manager {
-                vec![name.clone()]
-            } else {
-                pm.config.commands.keys().cloned().collect()
+            // If specific package manager is provided, use it. Otherwise, use all available
+            let execution_items = match package_manager {
+                Some(_) => {
+                    // Parse package manager to get manager name and subcommand
+                    let parsed = command.parse_package_manager().unwrap();
+                    vec![parsed]
+                }
+                None => {
+                    // Use all package managers with their default subcommands
+                    pm.config.commands.iter()
+                        .map(|pm_config| (pm_config.id.clone(), None))
+                        .collect()
+                }
             };
 
             let mut has_error = false;
             let mut results = HashMap::new();
 
-            for name in managers {
-                info!("Updating {}", name);
-                match pm.update(&name) {
+            for (manager_name, subcommand) in execution_items {
+                // Display name for logs and results
+                let display_name = match &subcommand {
+                    Some(sc) => format!("{}:{}", manager_name, sc),
+                    None => manager_name.clone(),
+                };
+                
+                info!("Updating {}", display_name);
+                
+                // Execute update command with the appropriate subcommand
+                let result = match &subcommand {
+                    Some(sc) => pm.update_with_subcommand(&manager_name, Some(sc)),
+                    None => pm.update(&manager_name),
+                };
+                
+                match result {
                     Ok(_) => {
                         results.insert(
-                            name.clone(),
+                            display_name,
                             ExecutionResult {
                                 success: true,
                                 message: "Successfully updated".to_string(),
@@ -131,9 +175,9 @@ fn execute_command(command: &Commands, pm: &PackageManager) {
                         );
                     }
                     Err(e) => {
-                        error!("{}: {}", name, e);
+                        error!("{}: {}", manager_name, e);
                         results.insert(
-                            name.clone(),
+                            display_name,
                             ExecutionResult {
                                 success: false,
                                 message: format!("Error: {}", e),
@@ -199,11 +243,5 @@ fn print_summary(operation: &str, results: &HashMap<String, ExecutionResult>) {
     }
 
     // Print statistics
-    println!(
-        "\nStats: {} total, {} succeeded, {} failed",
-        results.len(),
-        success_count,
-        failure_count
-    );
-    println!("==============================================");
+    println!("\nTotal: {}, Successful: {}, Failed: {}", success_count + failure_count, success_count, failure_count);
 }

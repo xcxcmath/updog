@@ -1,24 +1,22 @@
-use crate::config::Config;
-use std::collections::HashSet;
-use std::error::Error;
-use std::fmt;
 use std::process::{Command, ExitStatus, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use tracing::{error, info, warn};
+use tracing::{error, info};
+
+use crate::config::{CommandSequence, Config};
 
 #[derive(Debug)]
 pub struct UpdateError {
     pub message: String,
 }
 
-impl fmt::Display for UpdateError {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+impl std::fmt::Display for UpdateError {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         write!(f, "Update error: {}", self.message)
     }
 }
 
-impl Error for UpdateError {}
+impl std::error::Error for UpdateError {}
 
 pub struct PackageManager {
     pub config: Config,
@@ -28,14 +26,14 @@ pub struct PackageManager {
 
 // Structure to track running processes
 struct ProcessTracker {
-    active_processes: HashSet<u32>, // Set of active process IDs
+    active_processes: std::collections::HashSet<u32>, // Set of active process IDs
     shutdown_requested: Arc<AtomicBool>,
 }
 
 impl ProcessTracker {
     fn new() -> Self {
         Self {
-            active_processes: HashSet::new(),
+            active_processes: std::collections::HashSet::new(),
             shutdown_requested: Arc::new(AtomicBool::new(false)),
         }
     }
@@ -74,7 +72,7 @@ impl ProcessTracker {
             {
                 // On Windows, a different termination mechanism is needed
                 // Here, we just perform simple logging
-                warn!(
+                info!(
                     "Process termination on Windows not implemented for PID: {}",
                     pid
                 );
@@ -84,147 +82,197 @@ impl ProcessTracker {
 }
 
 impl PackageManager {
-    fn run_command(&self, command: &str) -> Result<ExitStatus, UpdateError> {
-        // Abort command execution if shutdown is requested
+    // Execute a command sequence (single or multiple commands)
+    fn execute_command(
+        &self,
+        _manager_name: &str,
+        command: &CommandSequence,
+    ) -> Result<(), UpdateError> {
+        match command {
+            CommandSequence::Single(cmd) => {
+                // Execute a single command
+                let status = self.run_single_command(cmd)?;
+                if !status.success() {
+                    return Err(UpdateError {
+                        message: format!("Command failed with exit code: {}", status),
+                    });
+                }
+                Ok(())
+            }
+            CommandSequence::Multiple(cmds) => {
+                // Execute multiple commands in sequence
+                for (index, cmd) in cmds.iter().enumerate() {
+                    info!("Executing step {} of {}", index + 1, cmds.len());
+                    let status = self.run_single_command(cmd)?;
+                    if !status.success() {
+                        // Stop on first failure and return error
+                        return Err(UpdateError {
+                            message: format!("Command failed with exit code: {}", status),
+                        });
+                    }
+                }
+                Ok(())
+            }
+        }
+    }
+
+    // Execute a single command
+    fn run_single_command(&self, command: &str) -> Result<ExitStatus, UpdateError> {
+        if self.dry_run {
+            info!("Dry run: would execute command: {}", command);
+            return Ok(ExitStatus::default()); // Simulate success in dry run mode
+        }
+
+        let shell = if cfg!(target_os = "windows") {
+            "cmd"
+        } else {
+            "bash"
+        };
+
+        let shell_arg = if cfg!(target_os = "windows") {
+            "/C"
+        } else {
+            "-c"
+        };
+
+        info!("Executing command: {}", command);
+
+        // Launch the command
+        let mut process = match Command::new(shell)
+            .arg(shell_arg)
+            .arg(command)
+            .stderr(Stdio::inherit())
+            .stdout(Stdio::inherit())
+            .spawn()
         {
-            let tracker = self.process_tracker.lock().unwrap();
-            if tracker.is_shutdown_requested() {
+            Ok(p) => p,
+            Err(e) => {
                 return Err(UpdateError {
-                    message: "Command execution aborted due to shutdown request".to_string(),
+                    message: format!("Failed to execute command: {}", e),
+                });
+            }
+        };
+
+        // Get the process ID for tracking
+        let pid = process.id();
+
+        // Register the process with the tracker
+        {
+            let mut tracker = self.process_tracker.lock().unwrap();
+            tracker.register_process(pid);
+
+            // Check if shutdown was requested before we even started
+            if tracker.is_shutdown_requested() {
+                drop(tracker); // Release the lock before terminating
+
+                // If so, terminate immediately
+                #[cfg(unix)]
+                unsafe {
+                    libc::kill(pid as i32, libc::SIGTERM);
+                    info!("Terminated process {} due to shutdown request", pid);
+                }
+
+                return Err(UpdateError {
+                    message: String::from("Operation was cancelled"),
                 });
             }
         }
 
-        // Dry run mode - just log the command without executing it
-        if self.dry_run {
-            info!("[DRY RUN] Would execute: {}", command);
-            // Instead of using from_raw, execute a simple "true" command
-            // which will always succeed with exit code 0
-            return Command::new("true").status().map_err(|e| UpdateError {
-                message: format!("Failed to execute command: {}", e),
-            });
-        }
+        // Wait for the process to complete
+        let exit_status = match process.wait() {
+            Ok(status) => status,
+            Err(e) => {
+                return Err(UpdateError {
+                    message: format!("Failed to wait for command: {}", e),
+                });
+            }
+        };
 
-        // Use spawn() to execute the command - wait() for it later
-        let mut child = Command::new("sh")
-            .arg("-c")
-            .arg(command)
-            .stdin(Stdio::inherit())
-            .stdout(Stdio::inherit())
-            .stderr(Stdio::inherit())
-            .spawn()
-            .map_err(|e| UpdateError {
-                message: format!("Failed to execute command: {}", e),
-            })?;
-
-        let pid = child.id();
-
-        // Register process ID
-        {
-            let mut tracker = self.process_tracker.lock().unwrap();
-            tracker.register_process(pid);
-            info!("Started process {} for command: {}", pid, command);
-        }
-
-        // Wait for process completion
-        let status = child.wait().map_err(|e| UpdateError {
-            message: format!("Failed to wait for command completion: {}", e),
-        })?;
-
-        // Unregister process ID
+        // Unregister the process when it's done
         {
             let mut tracker = self.process_tracker.lock().unwrap();
             tracker.unregister_process(pid);
-            info!("Process {} completed", pid);
         }
 
-        // Print exit code
-        if let Some(code) = status.code() {
-            if code == 0 {
-                info!("Command completed with exit code: {}", code);
-            } else {
-                warn!("Command completed with non-zero exit code: {}", code);
-            }
+        // Check the exit status
+        if exit_status.success() {
+            info!("Command completed successfully");
         } else {
-            warn!("Command terminated by signal");
+            error!("Command failed with exit code: {}", exit_status);
         }
 
-        Ok(status)
+        Ok(exit_status)
     }
 
     pub fn new(config: Config) -> Self {
         let process_tracker = Arc::new(Mutex::new(ProcessTracker::new()));
-        Self::setup_signal_handlers(Arc::clone(&process_tracker));
-
-        Self {
+        let pm = Self {
             config,
             dry_run: false,
-            process_tracker,
-        }
+            process_tracker: process_tracker.clone(),
+        };
+
+        Self::setup_signal_handlers(process_tracker);
+        pm
     }
 
     pub fn with_dry_run(config: Config, dry_run: bool) -> Self {
         let process_tracker = Arc::new(Mutex::new(ProcessTracker::new()));
-        Self::setup_signal_handlers(Arc::clone(&process_tracker));
-
-        Self {
+        let pm = Self {
             config,
             dry_run,
-            process_tracker,
-        }
+            process_tracker: process_tracker.clone(),
+        };
+
+        Self::setup_signal_handlers(process_tracker);
+        pm
     }
 
     pub fn with_default_config() -> Self {
         let process_tracker = Arc::new(Mutex::new(ProcessTracker::new()));
-        Self::setup_signal_handlers(Arc::clone(&process_tracker));
-
-        Self {
+        let pm = Self {
             config: Config::default(),
             dry_run: false,
-            process_tracker,
-        }
+            process_tracker: process_tracker.clone(),
+        };
+
+        Self::setup_signal_handlers(process_tracker);
+        pm
     }
 
-    // Set up signal handlers (Unix platforms only)
     #[cfg(unix)]
+    // Set up signal handlers (Unix platforms only)
     fn setup_signal_handlers(process_tracker: Arc<Mutex<ProcessTracker>>) {
-        use std::sync::Once;
-        static INIT: Once = Once::new();
+        use signal_hook::{
+            consts::{SIGINT, SIGTERM},
+            iterator::Signals,
+        };
+        use std::thread;
 
-        INIT.call_once(|| {
-            let tracker_clone = Arc::clone(&process_tracker);
+        let mut signals = Signals::new(&[SIGINT, SIGTERM]).unwrap();
+        let process_tracker_clone = process_tracker.clone();
 
-            // SIGTERM (termination request) handler
-            if let Err(e) = ctrlc::set_handler(move || {
-                error!("Received termination signal, shutting down...");
-                let tracker = tracker_clone.lock().unwrap();
+        thread::spawn(move || {
+            for sig in signals.forever() {
+                info!("Received signal: {}", sig);
+                let tracker = process_tracker_clone.lock().unwrap();
                 tracker.request_shutdown();
                 tracker.terminate_all_processes();
-                std::process::exit(130); // Exit due to signal
-            }) {
-                error!("Error setting up signal handler: {}", e);
+                break;
             }
         });
     }
 
-    // Simple implementation on Windows
     #[cfg(not(unix))]
+    // Simple implementation on Windows
     fn setup_signal_handlers(process_tracker: Arc<Mutex<ProcessTracker>>) {
-        use std::sync::Once;
-        static INIT: Once = Once::new();
+        // Windows signal handling requires different mechanisms
+        // For simplicity, we'll just log that it's not fully implemented
+        // but we'll keep the process_tracker so the rest of the code is consistent
+        info!("Signal handling on this platform is limited");
 
-        INIT.call_once(|| {
-            let tracker_clone = Arc::clone(&process_tracker);
-
-            if let Err(e) = ctrlc::set_handler(move || {
-                error!("Received termination signal, shutting down...");
-                let tracker = tracker_clone.lock().unwrap();
-                tracker.request_shutdown();
-                std::process::exit(130);
-            }) {
-                error!("Error setting up signal handler: {}", e);
-            }
-        });
+        // In a real application, we'd implement proper Ctrl+C handling for Windows
+        // using the ctrlc crate or Windows-specific APIs
     }
 
     // Clean up on exit
@@ -234,157 +282,230 @@ impl PackageManager {
         tracker.terminate_all_processes();
     }
 
-    pub fn check(&self, manager_name: &str) -> Result<(), UpdateError> {
-        let command = self
+    // Execute the check command for a subcommand of a package manager
+    pub fn check_with_subcommand(
+        &self,
+        manager_name: &str,
+        subcommand_name: Option<&str>,
+    ) -> Result<(), UpdateError> {
+        // Find the package manager and subcommand
+        let subcommand = self
             .config
-            .commands
-            .get(manager_name)
-            .ok_or_else(|| UpdateError {
-                message: format!("Unknown package manager: {}", manager_name),
+            .find_subcommand(manager_name, subcommand_name)
+            .ok_or_else(|| {
+                let message = match subcommand_name {
+                    Some(sc) => format!(
+                        "Unknown subcommand '{}' for package manager '{}'",
+                        sc, manager_name
+                    ),
+                    None => format!(
+                        "Unknown package manager or default subcommand: {}",
+                        manager_name
+                    ),
+                };
+                UpdateError { message }
             })?;
 
-        // If check command is not defined, print a message and return Ok
-        let check_cmd = match &command.check {
-            Some(cmd) => cmd,
-            None => {
-                info!("No check command defined for {}", manager_name);
-                return Ok(());
-            }
-        };
+        // Check if the subcommand has a check command
+        if let Some(check_cmd) = &subcommand.command.check {
+            info!(
+                "Checking updates for {}{}...",
+                manager_name,
+                subcommand_name.map_or("".to_string(), |s| format!(":{}", s))
+            );
 
-        info!("Running check command for {}: {}", manager_name, check_cmd);
-        let status = self.run_command(check_cmd)?;
-
-        if !status.success() {
-            return Err(UpdateError {
-                message: format!("Check command failed with exit code: {}", status),
-            });
+            // Execute the check command
+            self.execute_command(manager_name, check_cmd)
+        } else {
+            // No check command specified for this subcommand
+            let message = format!(
+                "No check command specified for {}{}",
+                manager_name,
+                subcommand_name.map_or("".to_string(), |s| format!(":{}", s))
+            );
+            Err(UpdateError { message })
         }
-
-        Ok(())
     }
 
-    pub fn update(&self, manager_name: &str) -> Result<(), UpdateError> {
-        let command = self
+    // Execute the update command for a subcommand of a package manager
+    pub fn update_with_subcommand(
+        &self,
+        manager_name: &str,
+        subcommand_name: Option<&str>,
+    ) -> Result<(), UpdateError> {
+        // Find the package manager and subcommand
+        let subcommand = self
             .config
-            .commands
-            .get(manager_name)
-            .ok_or_else(|| UpdateError {
-                message: format!("Unknown package manager: {}", manager_name),
+            .find_subcommand(manager_name, subcommand_name)
+            .ok_or_else(|| {
+                let message = match subcommand_name {
+                    Some(sc) => format!(
+                        "Unknown subcommand '{}' for package manager '{}'",
+                        sc, manager_name
+                    ),
+                    None => format!(
+                        "Unknown package manager or default subcommand: {}",
+                        manager_name
+                    ),
+                };
+                UpdateError { message }
             })?;
 
-        // If update command is not defined, return an error
-        let update_cmd = match &command.update {
-            Some(cmd) => cmd,
-            None => {
-                return Err(UpdateError {
-                    message: format!("No update command defined for {}", manager_name),
-                });
-            }
-        };
+        // Check if the subcommand has an update command
+        if let Some(update_cmd) = &subcommand.command.update {
+            info!(
+                "Updating packages for {}{}...",
+                manager_name,
+                subcommand_name.map_or("".to_string(), |s| format!(":{}", s))
+            );
 
-        info!(
-            "Running update command for {}: {}",
-            manager_name, update_cmd
-        );
-        let status = self.run_command(update_cmd)?;
-
-        if !status.success() {
-            return Err(UpdateError {
-                message: format!("Update command failed with exit code: {}", status),
-            });
+            // Execute the update command
+            self.execute_command(manager_name, update_cmd)
+        } else {
+            // No update command specified for this subcommand
+            let message = format!(
+                "No update command specified for {}{}",
+                manager_name,
+                subcommand_name.map_or("".to_string(), |s| format!(":{}", s))
+            );
+            Err(UpdateError { message })
         }
+    }
 
-        Ok(())
+    // Check for updates (uses default subcommand)
+    pub fn check(&self, manager_name: &str) -> Result<(), UpdateError> {
+        self.check_with_subcommand(manager_name, None)
+    }
+
+    // Update packages (uses default subcommand)
+    pub fn update(&self, manager_name: &str) -> Result<(), UpdateError> {
+        self.update_with_subcommand(manager_name, None)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::UpdateCommand;
-    use std::collections::HashMap;
 
+    // Helper function to create a test configuration with subcommands
+    fn create_test_config_with_subcommands() -> Config {
+        let yaml = r#"
+        commands:
+          - id: test
+            subcommands:
+              - id: default
+                check: "echo checking step 1"
+                update: "echo updating step 1"
+              - id: multi
+                check: 
+                  - "echo checking step 1"
+                  - "echo checking step 2"
+                update:
+                  - "echo updating step 1" 
+                  - "echo updating step 2"
+              - id: fail
+                check: "exit 1"
+                update: "exit 1"
+        "#;
+
+        serde_yaml::from_str(yaml).unwrap()
+    }
+
+    // Helper function to create a test configuration with legacy format (direct check/update fields)
+    fn create_test_config_with_simple_format() -> Config {
+        let yaml = r#"
+        commands:
+          - id: simple
+            check: "echo simple checking"
+            update: "echo simple updating"
+          - id: simple_fail
+            check: "exit 1"
+            update: "exit 1"
+          - id: mixed
+            check: "echo mixed direct check"
+            update: "echo mixed direct update"
+            subcommands:
+              - id: sub
+                check: "echo mixed sub check"
+                update: "echo mixed sub update"
+        "#;
+
+        serde_yaml::from_str(yaml).unwrap()
+    }
+
+    // Simple test config creation function (maintains compatibility with existing tests)
     fn create_test_config() -> Config {
-        let mut commands = HashMap::new();
-        commands.insert(
-            "test".to_string(),
-            UpdateCommand {
-                check: Some("echo 'updates available'".to_string()),
-                update: Some("echo 'Updated'".to_string()),
-            },
-        );
-        commands.insert(
-            "no_check".to_string(),
-            UpdateCommand {
-                check: None,
-                update: Some("echo 'Updated without check'".to_string()),
-            },
-        );
-        commands.insert(
-            "no_update".to_string(),
-            UpdateCommand {
-                check: Some("echo 'Cannot update'".to_string()),
-                update: None,
-            },
-        );
-        commands.insert(
-            "fail".to_string(),
-            UpdateCommand {
-                check: Some("exit 1".to_string()),
-                update: Some("exit 2".to_string()),
-            },
-        );
-        Config { commands }
+        let yaml = r#"
+        commands:
+          - id: test
+            subcommands:
+              - id: default
+                check: "echo checking"
+                update: "echo updating"
+          - id: nocheck
+            subcommands:
+              - id: default
+                update: "echo updating"
+          - id: noupdate
+            subcommands:
+              - id: default
+                check: "echo checking"
+          - id: fail
+            subcommands:
+              - id: default
+                check: "exit 1"
+                update: "exit 1"
+        "#;
+
+        serde_yaml::from_str(yaml).unwrap()
     }
 
     #[test]
     fn test_package_manager_check() {
         let config = create_test_config();
         let pm = PackageManager::new(config);
-
-        assert!(pm.check("test").is_ok());
+        let result = pm.check("test");
+        assert!(result.is_ok());
     }
 
     #[test]
     fn test_package_manager_update() {
         let config = create_test_config();
         let pm = PackageManager::new(config);
-
-        assert!(pm.update("test").is_ok());
+        let result = pm.update("test");
+        assert!(result.is_ok());
     }
 
     #[test]
     fn test_package_manager_no_check_command() {
         let config = create_test_config();
         let pm = PackageManager::new(config);
-
-        assert!(pm.check("no_check").is_ok());
+        let result = pm.check("nocheck");
+        assert!(result.is_err());
     }
 
     #[test]
     fn test_package_manager_no_update_command() {
         let config = create_test_config();
         let pm = PackageManager::new(config);
-
-        assert!(pm.update("no_update").is_err());
+        let result = pm.update("noupdate");
+        assert!(result.is_err());
     }
 
     #[test]
     fn test_failed_command() {
         let config = create_test_config();
         let pm = PackageManager::new(config);
-
-        assert!(pm.check("fail").is_err());
-        assert!(pm.update("fail").is_err());
+        let result = pm.check("fail");
+        assert!(result.is_err());
     }
 
     #[test]
     fn test_unknown_package_manager() {
         let config = create_test_config();
         let pm = PackageManager::new(config);
-
-        assert!(pm.check("unknown").is_err());
+        let result = pm.check("unknown");
+        assert!(result.is_err());
     }
 
     #[test]
@@ -392,6 +513,85 @@ mod tests {
         let error = UpdateError {
             message: "Test error".to_string(),
         };
-        assert_eq!(format!("{}", error), "Update error: Test error");
+        assert_eq!(error.to_string(), "Update error: Test error");
+    }
+
+    #[test]
+    fn test_multiple_commands_success() {
+        let config = create_test_config_with_subcommands();
+        let pm = PackageManager::new(config);
+
+        let result = pm.check_with_subcommand("test", Some("multi"));
+        assert!(result.is_ok());
+
+        let result = pm.update_with_subcommand("test", Some("multi"));
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_multiple_commands_failure() {
+        let config = create_test_config_with_subcommands();
+        let pm = PackageManager::new(config);
+
+        let result = pm.check_with_subcommand("test", Some("fail"));
+        assert!(result.is_err());
+
+        let result = pm.update_with_subcommand("test", Some("fail"));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_subcommand_execution() {
+        let config = create_test_config_with_subcommands();
+        let pm = PackageManager::new(config);
+
+        // Test default subcommand
+        let result = pm.check("test");
+        assert!(result.is_ok());
+
+        // Test specific subcommand
+        let result = pm.check_with_subcommand("test", Some("multi"));
+        assert!(result.is_ok());
+
+        // Test unknown subcommand
+        let result = pm.check_with_subcommand("test", Some("nonexistent"));
+        assert!(result.is_err());
+
+        // Test unknown package manager
+        let result = pm.check_with_subcommand("nonexistent", None);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_simple_format_compatibility() {
+        let config = create_test_config_with_simple_format();
+        let pm = PackageManager::new(config);
+        
+        // Test package manager with direct check/update fields only
+        let result = pm.check("simple");
+        assert!(result.is_ok());
+        
+        let result = pm.update("simple");
+        assert!(result.is_ok());
+        
+        // Test error handling for failing direct check/update fields
+        let result = pm.check("simple_fail");
+        assert!(result.is_err());
+        
+        let result = pm.update("simple_fail");
+        assert!(result.is_err());
+        
+        // Test behavior when both direct fields and subcommands are present
+        // Default behavior: subcommands take priority
+        let result = pm.check("mixed");
+        assert!(result.is_ok());
+        
+        // Test with specific subcommand specified
+        let result = pm.check_with_subcommand("mixed", Some("sub"));
+        assert!(result.is_ok());
+        
+        // Test with nonexistent subcommand
+        let result = pm.check_with_subcommand("mixed", Some("nonexistent"));
+        assert!(result.is_err());
     }
 }

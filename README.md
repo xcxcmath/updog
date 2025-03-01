@@ -29,40 +29,63 @@ Updog uses a YAML configuration file to define update commands. By default, it l
 
 ```yaml
 commands:
-  # Standard format - specify both check and update commands
-  homebrew:
-    # Command to check for updates
-    check: "brew outdated"
-    # Command to perform updates
-    update: "brew upgrade"
+  # Modern format with subcommands support
+  - id: homebrew
+    subcommands:
+      - id: default
+        check: "brew outdated"
+        update: "brew upgrade"
+      - id: cask
+        check: "brew outdated --cask"
+        update: "brew upgrade --cask"
+
+  # Simple format - directly define commands on the package manager
+  - id: npm
+    check: "npm outdated -g"
+    update: "npm update -g"
 
   # Simplified format - directly use string value as update command
-  npm: "npm update -g"
-
-  # Example for another package manager
-  apt:
-    check: "apt list --upgradable"
-    update: "sudo apt update && sudo apt upgrade"
+  - id: other
+    update: "custom update command"
     
+  # Command sequence - run multiple commands in sequence
+  - id: rust
+    subcommands:
+      - id: default
+        update:
+          - "rustup update"
+          - "cargo install-update -a"
+
   # Update-only manager (no check command)
-  cargo:
+  - id: cargo
     update: "cargo install-update -a"
     
   # Check-only manager (no update command)
-  docker-images:
+  - id: docker-images
     check: "docker images --format '{{.Repository}}:{{.Tag}}' | grep -v '<none>' | xargs -I{} docker pull {} 2>&1 | grep -v 'up to date'"
 ```
 
-Two ways to configure package managers:
+Three ways to configure package managers:
 
-1. **Standard format**: Specify both `check` and `update` commands as an object
+1. **Modern format with subcommands**: Define a package manager with multiple subcommands
+   - `id`: Unique identifier for the package manager
+   - `subcommands`: List of subcommands, each with its own check/update commands
+     - `id`: Unique identifier for the subcommand (use "default" for the default subcommand)
+     - `check`: Command to check for updates (optional)
+     - `update`: Command to perform the actual update (optional)
+
+2. **Simple format**: Define update/check commands directly on the package manager
+   - `id`: Unique identifier for the package manager
    - `check`: Command to check for updates (optional)
-   - `update`: Command to perform the actual update (required for update operations)
+   - `update`: Command to perform the actual update (optional)
 
-2. **Simplified format**: Directly specify a string value, treated as an update command
+3. **Command sequence**: For commands that need to run multiple steps in sequence
    ```yaml
    commands:
-     npm: "npm update -g"  # Treated as an update command
+     - id: rust
+       update:
+         - "rustup update"
+         - "cargo install-update -a"
    ```
 
 ## 🛠️ Usage
@@ -81,6 +104,12 @@ updog check homebrew
 
 # Update specific package manager
 updog update homebrew
+
+# Check specific package manager with subcommand
+updog check homebrew:cask
+
+# Update specific package manager with subcommand
+updog update homebrew:cask
 
 # Show what will be updated without executing
 updog check --dry-run
