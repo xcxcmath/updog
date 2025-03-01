@@ -43,10 +43,6 @@ commands:
   - id: npm
     check: "npm outdated -g"
     update: "npm update -g"
-
-  # Simplified format - directly use string value as update command
-  - id: other
-    update: "custom update command"
     
   # Command sequence - run multiple commands in sequence
   - id: rust
