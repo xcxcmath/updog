@@ -72,7 +72,9 @@ fn execute_command(command: &Commands, pm: &PackageManager) {
                 }
                 None => {
                     // Use all package managers with their default subcommands
-                    pm.config.commands.iter()
+                    pm.config
+                        .commands
+                        .iter()
                         .map(|pm_config| (pm_config.id.clone(), None))
                         .collect()
                 }
@@ -81,21 +83,21 @@ fn execute_command(command: &Commands, pm: &PackageManager) {
             let mut has_error = false;
             let mut results = HashMap::new();
 
-            for (manager_name, subcommand) in execution_items {
+            for (manager_name, subcommand) in &execution_items {
                 // Display name for logs and results
                 let display_name = match &subcommand {
                     Some(sc) => format!("{}:{}", manager_name, sc),
                     None => manager_name.clone(),
                 };
-                
+
                 info!("Checking updates for {}", display_name);
-                
+
                 // Execute check command with the appropriate subcommand
                 let result = match &subcommand {
                     Some(sc) => pm.check_with_subcommand(&manager_name, Some(sc)),
                     None => pm.check(&manager_name),
                 };
-                
+
                 match result {
                     Ok(_) => {
                         results.insert(
@@ -117,6 +119,11 @@ fn execute_command(command: &Commands, pm: &PackageManager) {
                         );
                         has_error = true;
                     }
+                }
+
+                // Add visual separator between package managers
+                if execution_items.len() > 1 {
+                    println!("\n----------------------------------------------\n");
                 }
             }
 
@@ -140,7 +147,9 @@ fn execute_command(command: &Commands, pm: &PackageManager) {
                 }
                 None => {
                     // Use all package managers with their default subcommands
-                    pm.config.commands.iter()
+                    pm.config
+                        .commands
+                        .iter()
                         .map(|pm_config| (pm_config.id.clone(), None))
                         .collect()
                 }
@@ -149,21 +158,21 @@ fn execute_command(command: &Commands, pm: &PackageManager) {
             let mut has_error = false;
             let mut results = HashMap::new();
 
-            for (manager_name, subcommand) in execution_items {
+            for (manager_name, subcommand) in &execution_items {
                 // Display name for logs and results
                 let display_name = match &subcommand {
                     Some(sc) => format!("{}:{}", manager_name, sc),
                     None => manager_name.clone(),
                 };
-                
+
                 info!("Updating {}", display_name);
-                
+
                 // Execute update command with the appropriate subcommand
                 let result = match &subcommand {
                     Some(sc) => pm.update_with_subcommand(&manager_name, Some(sc)),
                     None => pm.update(&manager_name),
                 };
-                
+
                 match result {
                     Ok(_) => {
                         results.insert(
@@ -185,6 +194,11 @@ fn execute_command(command: &Commands, pm: &PackageManager) {
                         );
                         has_error = true;
                     }
+                }
+
+                // Add visual separator between package managers
+                if execution_items.len() > 1 {
+                    println!("\n----------------------------------------------\n");
                 }
             }
 
@@ -243,5 +257,10 @@ fn print_summary(operation: &str, results: &HashMap<String, ExecutionResult>) {
     }
 
     // Print statistics
-    println!("\nTotal: {}, Successful: {}, Failed: {}", success_count + failure_count, success_count, failure_count);
+    println!(
+        "\nTotal: {}, Successful: {}, Failed: {}",
+        success_count + failure_count,
+        success_count,
+        failure_count
+    );
 }
