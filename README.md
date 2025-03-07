@@ -2,14 +2,13 @@
 
 Just for Rust practice.
 
-Cross-platform CLI/TUI tool for managing system and package updates seamlessly.
+Cross-platform CLI tool for managing system and package updates seamlessly.
 *Update everything. Everywhere. Efficiently.*
 
 ## 🚀 Features
 
 - Cross-platform support – Works on macOS, Linux, and Windows
 - Configurable updates – Define custom update commands via YAML configuration
-- Interactive & TUI support – Run in a terminal with interactive options
 - Logging & Dry-run – Logs everything, with an option to preview changes
 - Interactive prompts – Directly respond to package manager prompts during updates
 - Flexible configuration – Supports optional check commands and simplified string syntax
@@ -116,12 +115,6 @@ updog --config config.yaml update
 **Interactive Mode**
 
 When running `updog update`, the tool will pass through any interactive prompts from the package managers. This allows you to directly respond to confirmation prompts (like "Do you want to continue? [Y/n]") during the update process.
-
-**TUI Mode**
-```bash
-updog tui
-```
-> **Note:** TUI mode is currently not implemented yet. This feature is planned for future releases.
 
 ## 🔧 Development
 
